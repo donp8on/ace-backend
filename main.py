@@ -61,6 +61,10 @@ async def analyze(req: AnalyzeRequest):
             "--audio-quality", "0",
             "--max-filesize", "50m",
             "--postprocessor-args", "ffmpeg:-ar 22050 -ac 1",
+            "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "--add-header", "Accept-Language:en-US,en;q=0.9",
+            "--no-check-certificates",
+            "--extractor-args", "youtube:player_client=android",
             "-o", audio_path,
             url
         ], capture_output=True, text=True, timeout=120)
