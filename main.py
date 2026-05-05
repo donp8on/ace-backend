@@ -40,7 +40,7 @@ class AnalyzeResponse(BaseModel):
 
 
 def resolve_url(url: str) -> str:
-    """Follow redirects to get the final URL — handles on.soundcloud.com and other shorteners."""
+    """Follow redirects to get the final URL, then clean it up."""
     try:
         import urllib.request
         req = urllib.request.Request(
@@ -49,18 +49,25 @@ def resolve_url(url: str) -> str:
             method="HEAD"
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
-            return resp.url
+            resolved = resp.url
     except Exception:
         try:
-            # fallback — GET request
-            req = urllib.request.Request(
-                url,
-                headers={"User-Agent": "Mozilla/5.0"},
-            )
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
             with urllib.request.urlopen(req, timeout=10) as resp:
-                return resp.url
+                resolved = resp.url
         except Exception:
-            return url  # return original if resolution fails
+            return url
+
+    # Clean up the resolved URL:
+    # 1. Convert m.soundcloud.com → soundcloud.com
+    resolved = resolved.replace("m.soundcloud.com", "soundcloud.com")
+    # 2. Strip query parameters (utm_, in=, etc.) — keep only the path
+    if "soundcloud.com" in resolved and "?" in resolved:
+        resolved = resolved.split("?")[0]
+    # 3. Strip trailing slashes
+    resolved = resolved.rstrip("/")
+
+    return resolved
 
 
 def find_ffmpeg():
