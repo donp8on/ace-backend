@@ -36,55 +36,26 @@ class AnalyzeResponse(BaseModel):
 
 
 def find_ffmpeg():
-    """Search every possible location for ffmpeg."""
-    # Check PATH first
+    """Find ffmpeg — checks PATH, common paths, then imageio-ffmpeg bundle."""
+    # 1. Check system PATH
     found = shutil.which("ffmpeg")
     if found:
         return found
 
-    # Common absolute paths
-    candidates = [
-        "/usr/bin/ffmpeg",
-        "/usr/local/bin/ffmpeg",
-        "/bin/ffmpeg",
-        "/opt/ffmpeg/bin/ffmpeg",
-    ]
-    for c in candidates:
+    # 2. Common absolute paths
+    for c in ["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/bin/ffmpeg"]:
         if os.path.isfile(c) and os.access(c, os.X_OK):
             return c
 
-    # Search nix store
+    # 3. imageio-ffmpeg bundled binary (pip-installed, always works)
     try:
-        r = subprocess.run(
-            ["find", "/nix", "-name", "ffmpeg", "-type", "f"],
-            capture_output=True, text=True, timeout=10
-        )
-        for line in r.stdout.strip().splitlines():
-            if os.access(line, os.X_OK):
-                return line.strip()
+        import imageio_ffmpeg
+        path = imageio_ffmpeg.get_ffmpeg_exe()
+        if path and os.path.isfile(path):
+            return path
     except Exception:
         pass
 
-    return None
-
-
-def install_ffmpeg_static():
-    """Download a static ffmpeg binary if not found."""
-    ffmpeg_path = "/tmp/ffmpeg"
-    if os.path.isfile(ffmpeg_path) and os.access(ffmpeg_path, os.X_OK):
-        return ffmpeg_path
-    try:
-        import urllib.request
-        url = "https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz"
-        tar_path = "/tmp/ffmpeg.tar.xz"
-        urllib.request.urlretrieve(url, tar_path)
-        subprocess.run(["tar", "-xf", tar_path, "-C", "/tmp", "--strip-components=2",
-                        "--wildcards", "*/bin/ffmpeg"], check=True, timeout=60)
-        os.chmod(ffmpeg_path, 0o755)
-        if os.path.isfile(ffmpeg_path):
-            return ffmpeg_path
-    except Exception as e:
-        print(f"Static ffmpeg download failed: {e}")
     return None
 
 
@@ -96,42 +67,7 @@ def root():
 @app.get("/health")
 def health():
     ffmpeg = find_ffmpeg()
-    path_env = os.environ.get("PATH", "")
-    return {
-        "status": "ok",
-        "ffmpeg": ffmpeg or "not found",
-        "PATH": path_env,
-    }
-
-
-@app.get("/debug")
-def debug():
-    """Shows exactly what's on the system to help diagnose ffmpeg."""
-    info = {}
-    # which ffmpeg
-    info["which_ffmpeg"] = shutil.which("ffmpeg") or "not found"
-    # PATH
-    info["PATH"] = os.environ.get("PATH", "")
-    # try finding in /nix
-    try:
-        r = subprocess.run(["find", "/nix", "-name", "ffmpeg", "-type", "f"],
-                           capture_output=True, text=True, timeout=10)
-        info["nix_ffmpeg_paths"] = r.stdout.strip().splitlines()[:10]
-    except Exception as e:
-        info["nix_search_error"] = str(e)
-    # list /usr/bin
-    try:
-        bins = [f for f in os.listdir("/usr/bin") if "ff" in f.lower()]
-        info["usr_bin_ff"] = bins
-    except Exception:
-        pass
-    # list /usr/local/bin
-    try:
-        bins = [f for f in os.listdir("/usr/local/bin") if "ff" in f.lower()]
-        info["usr_local_bin_ff"] = bins
-    except Exception:
-        pass
-    return info
+    return {"status": "ok", "ffmpeg": ffmpeg or "not found"}
 
 
 @app.post("/analyze", response_model=AnalyzeResponse)
@@ -140,9 +76,9 @@ async def analyze(req: AnalyzeRequest):
     if not any(x in url for x in ["youtube.com", "youtu.be"]):
         raise HTTPException(status_code=400, detail="Only YouTube URLs are supported")
 
-    ffmpeg_path = find_ffmpeg() or install_ffmpeg_static()
+    ffmpeg_path = find_ffmpeg()
     if not ffmpeg_path:
-        raise HTTPException(status_code=500, detail="ffmpeg not found and static download failed")
+        raise HTTPException(status_code=500, detail="ffmpeg not found on server")
 
     with tempfile.TemporaryDirectory() as tmpdir:
         audio_path = os.path.join(tmpdir, "beat.%(ext)s")
