@@ -132,6 +132,13 @@ def root():
     return {"status": "ACE Beat Analyzer running"}
 
 
+@app.get("/resolve")
+def resolve(url: str):
+    """Debug endpoint — shows what URL a shortened link resolves to."""
+    resolved = resolve_url(url)
+    return {"original": url, "resolved": resolved}
+
+
 @app.get("/health")
 def health():
     ffmpeg = find_ffmpeg()
