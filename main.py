@@ -95,6 +95,7 @@ async def analyze(req: AnalyzeRequest):
             "--add-header", "Accept-Language:en-US,en;q=0.9",
             "--extractor-args", "youtube:player_client=web",
             "--no-check-certificates",
+            "--cookies", "/app/cookies.txt",
             "--postprocessor-args", "ffmpeg:-ar 22050 -ac 1",
             "-o", audio_path,
             url
