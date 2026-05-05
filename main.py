@@ -22,7 +22,7 @@ app.add_middleware(
 KEY_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 MODE_NAMES = ["minor", "major"]
 
-SUPPORTED_SOURCES = ["soundcloud.com", "soundcloud.app", ".mp3", ".wav", ".m4a", ".ogg", ".flac", "beatstars.com", "audiomack.com"]
+SUPPORTED_SOURCES = ["soundcloud.com", "soundcloud.app", "on.soundcloud.com", ".mp3", ".wav", ".m4a", ".ogg", ".flac", "beatstars.com", "audiomack.com"]
 
 
 class AnalyzeRequest(BaseModel):
@@ -37,6 +37,30 @@ class AnalyzeResponse(BaseModel):
     key_full: str
     confidence: float
     source: str
+
+
+def resolve_url(url: str) -> str:
+    """Follow redirects to get the final URL — handles on.soundcloud.com and other shorteners."""
+    try:
+        import urllib.request
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15"},
+            method="HEAD"
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return resp.url
+    except Exception:
+        try:
+            # fallback — GET request
+            req = urllib.request.Request(
+                url,
+                headers={"User-Agent": "Mozilla/5.0"},
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return resp.url
+        except Exception:
+            return url  # return original if resolution fails
 
 
 def find_ffmpeg():
@@ -57,7 +81,7 @@ def find_ffmpeg():
 
 
 def detect_source(url: str) -> str:
-    if "soundcloud.com" in url or "soundcloud.app" in url:
+    if "soundcloud.com" in url or "soundcloud.app" in url or "on.soundcloud.com" in url:
         return "soundcloud"
     if "beatstars.com" in url:
         return "beatstars"
@@ -117,6 +141,10 @@ def health():
 @app.post("/analyze", response_model=AnalyzeResponse)
 async def analyze(req: AnalyzeRequest):
     url = req.url.strip()
+
+    # Auto-resolve shortened/redirect URLs (on.soundcloud.com, bit.ly, etc.)
+    url = resolve_url(url)
+
     source = detect_source(url)
 
     if source == "unknown":
