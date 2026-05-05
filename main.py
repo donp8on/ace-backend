@@ -1,6 +1,7 @@
 import os
 import tempfile
 import subprocess
+import shutil
 import numpy as np
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -34,6 +35,16 @@ class AnalyzeResponse(BaseModel):
     confidence: float
 
 
+def find_ffmpeg():
+    for candidate in ["ffmpeg", "/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/nix/var/nix/profiles/default/bin/ffmpeg"]:
+        found = shutil.which(candidate)
+        if found:
+            return found
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
 @app.get("/")
 def root():
     return {"status": "ACE Beat Analyzer running"}
@@ -41,7 +52,8 @@ def root():
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    ffmpeg = find_ffmpeg()
+    return {"status": "ok", "ffmpeg": ffmpeg or "not found"}
 
 
 @app.post("/analyze", response_model=AnalyzeResponse)
@@ -50,30 +62,40 @@ async def analyze(req: AnalyzeRequest):
     if not any(x in url for x in ["youtube.com", "youtu.be"]):
         raise HTTPException(status_code=400, detail="Only YouTube URLs are supported")
 
+    ffmpeg_path = find_ffmpeg()
+    if not ffmpeg_path:
+        raise HTTPException(status_code=500, detail="ffmpeg not installed on server")
+
     with tempfile.TemporaryDirectory() as tmpdir:
         audio_path = os.path.join(tmpdir, "beat.%(ext)s")
 
-        result = subprocess.run([
+        cmd = [
             "yt-dlp",
             "--no-playlist",
             "--extract-audio",
             "--audio-format", "wav",
             "--audio-quality", "0",
             "--max-filesize", "50m",
-            "--postprocessor-args", "ffmpeg:-ar 22050 -ac 1",
-            "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "--ffmpeg-location", ffmpeg_path,
+            "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
             "--add-header", "Accept-Language:en-US,en;q=0.9",
+            "--extractor-args", "youtube:player_client=web",
             "--no-check-certificates",
-            "--extractor-args", "youtube:player_client=android",
+            "--postprocessor-args", "ffmpeg:-ar 22050 -ac 1",
             "-o", audio_path,
             url
-        ], capture_output=True, text=True, timeout=120)
+        ]
+
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
 
         if result.returncode != 0:
-            detail = result.stderr[-500:] if result.stderr else "Download failed"
+            detail = (result.stderr or result.stdout or "Download failed")[-600:]
             raise HTTPException(status_code=422, detail=f"Could not download audio: {detail}")
 
-        wav_file = next((os.path.join(tmpdir, f) for f in os.listdir(tmpdir) if f.endswith(".wav")), None)
+        wav_file = next(
+            (os.path.join(tmpdir, f) for f in os.listdir(tmpdir) if f.endswith(".wav")),
+            None
+        )
         if not wav_file:
             raise HTTPException(status_code=422, detail="Audio extraction failed")
 
