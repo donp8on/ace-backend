@@ -36,12 +36,55 @@ class AnalyzeResponse(BaseModel):
 
 
 def find_ffmpeg():
-    for candidate in ["ffmpeg", "/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/nix/var/nix/profiles/default/bin/ffmpeg"]:
-        found = shutil.which(candidate)
-        if found:
-            return found
-        if os.path.isfile(candidate):
-            return candidate
+    """Search every possible location for ffmpeg."""
+    # Check PATH first
+    found = shutil.which("ffmpeg")
+    if found:
+        return found
+
+    # Common absolute paths
+    candidates = [
+        "/usr/bin/ffmpeg",
+        "/usr/local/bin/ffmpeg",
+        "/bin/ffmpeg",
+        "/opt/ffmpeg/bin/ffmpeg",
+    ]
+    for c in candidates:
+        if os.path.isfile(c) and os.access(c, os.X_OK):
+            return c
+
+    # Search nix store
+    try:
+        r = subprocess.run(
+            ["find", "/nix", "-name", "ffmpeg", "-type", "f"],
+            capture_output=True, text=True, timeout=10
+        )
+        for line in r.stdout.strip().splitlines():
+            if os.access(line, os.X_OK):
+                return line.strip()
+    except Exception:
+        pass
+
+    return None
+
+
+def install_ffmpeg_static():
+    """Download a static ffmpeg binary if not found."""
+    ffmpeg_path = "/tmp/ffmpeg"
+    if os.path.isfile(ffmpeg_path) and os.access(ffmpeg_path, os.X_OK):
+        return ffmpeg_path
+    try:
+        import urllib.request
+        url = "https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz"
+        tar_path = "/tmp/ffmpeg.tar.xz"
+        urllib.request.urlretrieve(url, tar_path)
+        subprocess.run(["tar", "-xf", tar_path, "-C", "/tmp", "--strip-components=2",
+                        "--wildcards", "*/bin/ffmpeg"], check=True, timeout=60)
+        os.chmod(ffmpeg_path, 0o755)
+        if os.path.isfile(ffmpeg_path):
+            return ffmpeg_path
+    except Exception as e:
+        print(f"Static ffmpeg download failed: {e}")
     return None
 
 
@@ -53,7 +96,42 @@ def root():
 @app.get("/health")
 def health():
     ffmpeg = find_ffmpeg()
-    return {"status": "ok", "ffmpeg": ffmpeg or "not found"}
+    path_env = os.environ.get("PATH", "")
+    return {
+        "status": "ok",
+        "ffmpeg": ffmpeg or "not found",
+        "PATH": path_env,
+    }
+
+
+@app.get("/debug")
+def debug():
+    """Shows exactly what's on the system to help diagnose ffmpeg."""
+    info = {}
+    # which ffmpeg
+    info["which_ffmpeg"] = shutil.which("ffmpeg") or "not found"
+    # PATH
+    info["PATH"] = os.environ.get("PATH", "")
+    # try finding in /nix
+    try:
+        r = subprocess.run(["find", "/nix", "-name", "ffmpeg", "-type", "f"],
+                           capture_output=True, text=True, timeout=10)
+        info["nix_ffmpeg_paths"] = r.stdout.strip().splitlines()[:10]
+    except Exception as e:
+        info["nix_search_error"] = str(e)
+    # list /usr/bin
+    try:
+        bins = [f for f in os.listdir("/usr/bin") if "ff" in f.lower()]
+        info["usr_bin_ff"] = bins
+    except Exception:
+        pass
+    # list /usr/local/bin
+    try:
+        bins = [f for f in os.listdir("/usr/local/bin") if "ff" in f.lower()]
+        info["usr_local_bin_ff"] = bins
+    except Exception:
+        pass
+    return info
 
 
 @app.post("/analyze", response_model=AnalyzeResponse)
@@ -62,9 +140,9 @@ async def analyze(req: AnalyzeRequest):
     if not any(x in url for x in ["youtube.com", "youtu.be"]):
         raise HTTPException(status_code=400, detail="Only YouTube URLs are supported")
 
-    ffmpeg_path = find_ffmpeg()
+    ffmpeg_path = find_ffmpeg() or install_ffmpeg_static()
     if not ffmpeg_path:
-        raise HTTPException(status_code=500, detail="ffmpeg not installed on server")
+        raise HTTPException(status_code=500, detail="ffmpeg not found and static download failed")
 
     with tempfile.TemporaryDirectory() as tmpdir:
         audio_path = os.path.join(tmpdir, "beat.%(ext)s")
@@ -76,7 +154,7 @@ async def analyze(req: AnalyzeRequest):
             "--audio-format", "wav",
             "--audio-quality", "0",
             "--max-filesize", "50m",
-            "--ffmpeg-location", ffmpeg_path,
+            "--ffmpeg-location", os.path.dirname(ffmpeg_path),
             "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
             "--add-header", "Accept-Language:en-US,en;q=0.9",
             "--extractor-args", "youtube:player_client=web",
@@ -86,7 +164,7 @@ async def analyze(req: AnalyzeRequest):
             url
         ]
 
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
 
         if result.returncode != 0:
             detail = (result.stderr or result.stdout or "Download failed")[-600:]
